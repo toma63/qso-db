@@ -7,9 +7,21 @@ require 'nokogiri'
 require 'net/http'
 require 'tty-prompt'
 
+# prepend module to handle database open if needed - eliminates repeated boilerplate
+module DBOpen
+  # dynamic to make it DRY
+  [:add_callsign_record, :add_qso_record, :get_callsign_id, :get_schema, :get_columns].each do |method_name|
+    define_method(method_name) do |*args, **kwargs, &block|
+      open_db() unless @db
+      super(*args, **kwargs, &block)
+    end
+  end
+end
+
 # manage creation and updates of the database
 class QSODb
     attr_accessor :db_file, :db
+    prepend DBOpen
   
     def initialize(db_file='qso.db')
       @db_file = db_file
@@ -78,11 +90,7 @@ class QSODb
 
     # add a record to the callsign table specified by a hash
     # returns the primary key for the new record
-    # TODO add a decorator to open db if necessary - but this is ruby!
     def add_callsign_record(record_hash)
-      if !@db
-        open_db()
-      end
       # will error on duplicates
       @db[:callsign].insert(record_hash)
     end
@@ -90,9 +98,6 @@ class QSODb
     # add a record to the qso table
     # TODO generic add_record which takes a table?
     def add_qso_record(record_hash)
-      if !@db
-        open_db()
-      end
       # will error on duplicates of name, date, time
       @db[:qso].insert(record_hash)
     end
@@ -100,28 +105,16 @@ class QSODb
     # return a primary key for a given callsign
     # or nil if it doesn't exist
     def get_callsign_id(callsign)
-      if !@db
-        open_db()
-      end
-
       return @db[:callsign].where(call: callsign).get(:callsign_id)
     end
 
     # return the schema for a table
     def get_schema(table)
-      if !@db
-        open_db()
-      end
-
       return @db.schema(table)
     end
 
     # return the columns for a table
     def get_columns(table)
-      if !@db
-        open_db()
-      end
-
       return @db[table].columns
     end
 
