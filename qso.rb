@@ -227,60 +227,52 @@ class QSOPrompt
     more = true # keep going?
 
     # get columns for the qso table
+    # we'll compare these to the record keys at the end
     columns = @qsodb.get_columns(:qso)
+    columns.delete :qso_id # it will be generated on insertion
 
     while more
-      columns.each do |column|
 
-        next if column == :qso_id # this will be generated on insertion
-
-        # check for special handling, otherwise a string with no default
-        case column
-
-          when :date
-            record[:date] = prompt.ask("Date:", default: date_now)
-
-          when :time
-            record[:time] = prompt.ask("Time:", default: time_now)
-
-          when :band
-            choices = %w(20m 40m 17m 15m 12m 10m 2m 70cm 80m 160m 6m)
-            record[:band] = prompt.select("Band:", choices)
-
-          when :frequency
-            record[:frequency] = prompt.ask("Frequency:", convert: :float)
-
-          when :mode
-            choices = %w(SSB FT8 FM FT4 CW other)
-            record[:mode] = prompt.select("Mode:", choices)
-
-          when :rst_sent
-            record[:rst_sent] = prompt.ask("rst_sent:", default: "5/9")
-
-          when :rst_rcvd
-            record[:rst_rcvd] = prompt.ask("rst_rcvd:", default: "5/9")
-
-         when :qso
-            record[:qso] = prompt.yes?("QSO?")
-
-          when :callsign_id
-            # look it up or make a new one
-            qso_callsign = prompt.ask("callsign:")
-            callsign_id = @qsodb.get_callsign_id(qso_callsign)
-            unless callsign_id
-              callsign_record = @qrzclient.get_callsign_record(qso_callsign) # get info from qrz
-              callsign_id = @qsodb.add_callsign_record(callsign_record) # add it to the db
-            end
-            record[:callsign_id] = callsign_id
-
-          else
-            record[column] = prompt.ask("#{column.to_s.capitalize}:")
-        end
+      # look it up or make a new one
+      qso_callsign = prompt.ask("callsign:").upcase
+      callsign_id = @qsodb.get_callsign_id(qso_callsign)
+      unless callsign_id
+        puts("Adding callsign entry for #{qso_callsign}")
+        callsign_record = @qrzclient.get_callsign_record(qso_callsign) # get info from qrz
+        callsign_id = @qsodb.add_callsign_record(callsign_record) # add it to the db
       end
+      record[:callsign_id] = callsign_id
+
+      record[:date] = prompt.ask("Date:", default: date_now)
+
+      record[:time] = prompt.ask("Time:", default: time_now)
+
+      choices = %w(20m 40m 17m 15m 12m 10m 2m 70cm 80m 160m 6m)
+      record[:band] = prompt.select("Band:", choices)
+
+      # add a check vs band
+      record[:frequency] = prompt.ask("Frequency:", convert: :float)
+
+      choices = %w(SSB FT8 FM FT4 CW other)
+      record[:mode] = prompt.select("Mode:", choices)
+
+      record[:rst_sent] = prompt.ask("rst_sent:", default: "5/9")
+
+      record[:rst_rcvd] = prompt.ask("rst_rcvd:", default: "5/9")
+
+      record[:qso] = prompt.yes?("QSO?")
+
+      record[:comment] = prompt.ask("Comment:")
+
+      if record.keys.sort != columns.sort
+        abort("Error, database schema mismatch for qso record.")
+      end
+
+      @qsodb.add_qso_record(record)
+
       # more qsos?
       more = prompt.yes?("Another QSO?")
     end
-    @qsodb.add_qso_record(record)
 
   end
   
