@@ -78,12 +78,23 @@ class QSODb
 
     # add a record to the callsign table specified by a hash
     # returns the primary key for the new record
+    # TODO add a decorator to open db if necessary - but this is ruby!
     def add_callsign_record(record_hash)
       if !@db
         open_db()
       end
       # will error on duplicates
       @db[:callsign].insert(record_hash)
+    end
+
+    # add a record to the qso table
+    # TODO generic add_record which takes a table?
+    def add_qso_record(record_hash)
+      if !@db
+        open_db()
+      end
+      # will error on duplicates of name, date, time
+      @db[:qso].insert(record_hash)
     end
 
     # return a primary key for a given callsign
@@ -93,10 +104,28 @@ class QSODb
         open_db()
       end
 
-      return @db[:callsign].where(call: callsign).get(:id)
+      return @db[:callsign].where(call: callsign).get(:callsign_id)
     end
 
-end # class QSODb
+    # return the schema for a table
+    def get_schema(table)
+      if !@db
+        open_db()
+      end
+
+      return @db.schema(table)
+    end
+
+    # return the columns for a table
+    def get_columns(table)
+      if !@db
+        open_db()
+      end
+
+      return @db[table].columns
+    end
+
+  end # class QSODb
 
 # handle queries to qrz.com
 class QrzClient
@@ -172,6 +201,89 @@ end # class QrzClient
 
 # interactive prompting and updates
 class QSOPrompt
+
+  attr_accessor :qrzclient, :qsodb
+
+  # initialize with QrzClient and QSODb objects
+  # The QSODb is used to query and update the database
+  # The QrzClient is used to add callsign info from qrz.com
+  def initialize(qsodb, qrzclient)
+      @qsodb = qsodb
+      @qrzclient = qrzclient
+  end
+
+  # loop prompting for qso info
+  def prompt_for_qsos()
+
+    prompt = TTY::Prompt.new
+
+    utc_now = Time.now.utc
+    date_now = utc_now.strftime("%Y%m%d")
+    time_now = utc_now.strftime("%H%M")
+
+    # record hash for db insertion
+    record = {}    # prompt for each item in the qso table schema
+
+    more = true # keep going?
+
+    # get columns for the qso table
+    columns = @qsodb.get_columns(:qso)
+
+    while more
+      columns.each do |column|
+
+        next if column == :qso_id # this will be generated on insertion
+
+        # check for special handling, otherwise a string with no default
+        case column
+
+          when :date
+            record[:date] = prompt.ask("Date:", default: date_now)
+
+          when :time
+            record[:time] = prompt.ask("Time:", default: time_now)
+
+          when :band
+            choices = %w(20m 40m 17m 15m 12m 10m 2m 70cm 80m 160m 6m)
+            record[:band] = prompt.select("Band:", choices)
+
+          when :frequency
+            record[:frequency] = prompt.ask("Frequency:", convert: :float)
+
+          when :mode
+            choices = %w(SSB FT8 FM FT4 CW other)
+            record[:mode] = prompt.select("Mode:", choices)
+
+          when :rst_sent
+            record[:rst_sent] = prompt.ask("rst_sent:", default: "5/9")
+
+          when :rst_rcvd
+            record[:rst_rcvd] = prompt.ask("rst_rcvd:", default: "5/9")
+
+         when :qso
+            record[:qso] = prompt.yes?("QSO?")
+
+          when :callsign_id
+            # look it up or make a new one
+            qso_callsign = prompt.ask("callsign:")
+            callsign_id = @qsodb.get_callsign_id(qso_callsign)
+            unless callsign_id
+              callsign_record = @qrzclient.get_callsign_record(qso_callsign) # get info from qrz
+              callsign_id = @qsodb.add_callsign_record(callsign_record) # add it to the db
+            end
+            record[:callsign_id] = callsign_id
+
+          else
+            record[column] = prompt.ask("#{column.to_s.capitalize}:")
+        end
+      end
+      # more qsos?
+      more = prompt.yes?("Another QSO?")
+    end
+    @qsodb.add_qso_record(record)
+
+  end
+  
 end # class QSOPrompt
 
 # top level driver and argument handling
@@ -181,6 +293,7 @@ def run
   options[:db_path] = 'qso.db'
   options[:create] = false
   options[:add_callsign] = nil
+  options[:qso] = false
 
   opts = OptionParser.new do |parser|
 
@@ -196,7 +309,11 @@ def run
       options[:create] = c
     end
 
-    parser.on("-a CALLSIGN", "--add-callsign CALLSIGN", "Add a new entry to the callsign table") do |ac|
+    parser.on("-q", "--[no-]qso", "Prompt for qsos.") do |q|
+      options[:qso] = q
+    end
+
+   parser.on("-a CALLSIGN", "--add-callsign CALLSIGN", "Add a new entry to the callsign table") do |ac|
       options[:add_callsign] = ac
     end
 
@@ -209,8 +326,6 @@ def run
   opts.parse!
 
   puts "Using database file #{options[:db_path]}"
-  # handle qrz api requests
-  qrz = QrzClient.new()
 
   # initialize the database object with the specified or defaulted path
   database = QSODb.new(options[:db_path])
@@ -220,10 +335,22 @@ def run
     database.create
   end
 
-  # add a record for the specified callsign
-  if options[:add_callsign]
-    puts("adding callsign info for #{options[:add_callsign]}")
-    database.add_callsign_record(qrz.get_callsign_record(options[:add_callsign]))
+  if options[:qso] || options[:add_callsign]
+    # handle qrz api requests
+    qrz = QrzClient.new()
+
+    # add a record for the specified callsign
+    if options[:add_callsign]
+      puts("adding callsign info for #{options[:add_callsign]}")
+      database.add_callsign_record(qrz.get_callsign_record(options[:add_callsign]))
+    end
+
+    # prompt for qsos
+    if options[:qso]
+      qso = QSOPrompt.new(database, qrz)
+      qso.prompt_for_qsos
+    end
+
   end
 
 end # of run
